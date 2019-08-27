@@ -95,7 +95,7 @@ namespace AssemblyAutoBind
             var memoryStream = new MemoryStream();
             document.Save(new StreamWriter(memoryStream, Encoding.UTF8));
             var s1 = Encoding.UTF8.GetString(memoryStream.ToArray());
-            File.WriteAllText(config, s1.Replace(" xmlns=\"\"", ""), Encoding.UTF8);
+            File.WriteAllBytes(config, Encoding.UTF8.GetBytes(s1.Replace(" xmlns=\"\"", "")));
         }
     }
 }
