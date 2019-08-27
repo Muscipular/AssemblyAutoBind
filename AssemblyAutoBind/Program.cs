@@ -29,10 +29,12 @@ namespace AssemblyAutoBind
             {
                 try
                 {
+                    Console.WriteLine(e);
                     return ModuleDefMD.Load(e);
                 }
                 catch (Exception exception)
                 {
+                    Console.WriteLine(e + " " + exception);
                     return null;
                 }
             }).Where(e => e != null).ToList();
@@ -56,6 +58,25 @@ namespace AssemblyAutoBind
                 node = document.CreateElement("runtime");
                 document.GetElementsByTagName("configuration")[0].AppendChild(node);
             }
+            var oldList = new List<(string name, string token, Version version)>();
+            foreach (var assemblyBinding1 in node.ChildNodes.OfType<XmlNode>().Where(e => e.Name == "assemblyBinding"))
+            {
+                foreach (var dependentAssembly1 in assemblyBinding1.ChildNodes.OfType<XmlNode>().Where(e => e.Name == "dependentAssembly"))
+                {
+                    var nodes = dependentAssembly1.ChildNodes.OfType<XmlNode>();
+                    var assemblyIdentity = nodes.FirstOrDefault(e => e.Name == "assemblyIdentity");
+                    var bindingRedirect = nodes.FirstOrDefault(e => e.Name == "bindingRedirect");
+                    var value = bindingRedirect.Attributes["oldVersion"].Value.Split('-')[1];
+                    var value2 = bindingRedirect.Attributes["newVersion"].Value;
+                    rList.Add((assemblyIdentity.Attributes["name"].Value, assemblyIdentity.Attributes["publicKeyToken"].Value.ToLower(), Version.Parse(value)));
+                    rList.Add((assemblyIdentity.Attributes["name"].Value, assemblyIdentity.Attributes["publicKeyToken"].Value.ToLower(), Version.Parse(value2)));
+                    var md = list.FirstOrDefault(e => e.Assembly.Name.String.Equals(assemblyIdentity.Attributes["name"].Value) && e.Assembly.PublicKeyToken.ToString() == assemblyIdentity.Attributes["publicKeyToken"].Value.ToLower());
+                    if (md == null)
+                    {
+                        oldList.Add((assemblyIdentity.Attributes["name"].Value, assemblyIdentity.Attributes["publicKeyToken"].Value.ToLower(), Version.Parse(value2)));
+                    }
+                }
+            }
             node.RemoveAll();
             /**/
             var aList = document.CreateElement("assemblyBinding", "urn:schemas-microsoft-com:asm.v1");
@@ -65,13 +86,18 @@ namespace AssemblyAutoBind
             {
                 var versions = grouping.Select(e => e.version).ToList();
                 var md = list.FirstOrDefault(e => e.Assembly.Name.String.Equals(grouping.Key.name) && e.Assembly.PublicKeyToken.ToString() == grouping.Key.token);
+                Version k;
                 if (md == null)
                 {
-                    Console.WriteLine(grouping.Key.name + " " + grouping.Key.token);
+                    // Console.WriteLine(grouping.Key.name + " " + grouping.Key.token);
+                    k = oldList.FirstOrDefault(e => e.name == grouping.Key.name && e.token == grouping.Key.token).version;
                 }
-                var k = md.Assembly.Version;
+                else
+                {
+                    k = md.Assembly.Version;
+                }
                 versions.Add(k);
-                Console.WriteLine($"{grouping.Key.name} {grouping.Key.token} {versions.Min()}-{versions.Max()} => {k}");
+                Console.WriteLine($"{grouping.Key.name} {grouping.Key.token} 0.0.0.0-{versions.Max()} => {k}");
                 var x1 = document.CreateElement("dependentAssembly");
                 var e1 = document.CreateElement("assemblyIdentity");
                 e1.SetAttribute("name", grouping.Key.name);
