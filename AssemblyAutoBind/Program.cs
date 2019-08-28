@@ -25,12 +25,17 @@ namespace AssemblyAutoBind
             var document = new XmlDocument();
             document.Load(config);
             var files = Directory.GetFiles(bin).Where(e => Regex.IsMatch(e, @"\.(dll|exe)$", RegexOptions.IgnoreCase));
-            var list = files.Select(e =>
+
+            var assemblyResolver = new AssemblyResolver();
+            var moduleContext = new ModuleContext(assemblyResolver);
+            assemblyResolver.DefaultModuleContext = moduleContext;
+            assemblyResolver.EnableTypeDefCache = true;
+            var dllList = files.Select(e =>
             {
                 try
                 {
                     Console.WriteLine(e);
-                    return ModuleDefMD.Load(e);
+                    return ModuleDefMD.Load(e, moduleContext);
                 }
                 catch (Exception exception)
                 {
@@ -39,16 +44,21 @@ namespace AssemblyAutoBind
                 }
             }).Where(e => e != null).ToList();
 
-            var tuples = list.Where(e => e.IsStrongNameSigned).Select(e => (Name: e.Assembly.Name.String + e.Assembly.PublicKeyToken, e.Assembly.Version)).ToList();
-            var rList = new List<(string name, string token, Version version)>();
-            foreach (var moduleDefMd in list)
+            var signedDll = dllList.Where(e => e.IsStrongNameSigned)
+                    .Select(e => (name: e.Assembly.Name.String, token: e.Assembly.PublicKeyToken.ToString(), version: e.Assembly.Version))
+                    .ToList();
+            var confusedList = new List<(string name, string token, Version version)>();
+
+            var moduleDefs = ResolveAllAssembly(dllList, assemblyResolver).ToList();
+            foreach (var moduleDefMd in moduleDefs)
             {
                 foreach (var assemblyRef in moduleDefMd.GetAssemblyRefs().Where(e => !e.PublicKeyOrToken.IsNullOrEmpty))
                 {
-                    var s = assemblyRef.Name.String + assemblyRef.PublicKeyOrToken;
-                    if (tuples.Any(e => e.Name.Equals(s, StringComparison.OrdinalIgnoreCase) && e.Version != assemblyRef.Version))
+                    var name = assemblyRef.Name.String;
+                    var token = assemblyRef.PublicKeyOrToken.ToString();
+                    if (signedDll.Any(e => e.name == name && e.token == token && e.version != assemblyRef.Version))
                     {
-                        rList.Add((assemblyRef.Name, assemblyRef.PublicKeyOrToken.ToString(), assemblyRef.Version));
+                        confusedList.Add((assemblyRef.Name, token, assemblyRef.Version));
                     }
                 }
             }
@@ -58,39 +68,45 @@ namespace AssemblyAutoBind
                 node = document.CreateElement("runtime");
                 document.GetElementsByTagName("configuration")[0].AppendChild(node);
             }
-            var oldList = new List<(string name, string token, Version version)>();
-            foreach (var assemblyBinding1 in node.ChildNodes.OfType<XmlNode>().Where(e => e.Name == "assemblyBinding"))
+            var origConfigList = new List<(string name, string token, Version version)>();
+            foreach (var assemblyBinding1 in node.ChildNodes.OfType<XmlNode>().ToList().Where(e => e.Name == "assemblyBinding"))
             {
                 foreach (var dependentAssembly1 in assemblyBinding1.ChildNodes.OfType<XmlNode>().Where(e => e.Name == "dependentAssembly"))
                 {
                     var nodes = dependentAssembly1.ChildNodes.OfType<XmlNode>();
                     var assemblyIdentity = nodes.FirstOrDefault(e => e.Name == "assemblyIdentity");
                     var bindingRedirect = nodes.FirstOrDefault(e => e.Name == "bindingRedirect");
-                    var value = bindingRedirect.Attributes["oldVersion"].Value.Split('-')[1];
-                    var value2 = bindingRedirect.Attributes["newVersion"].Value;
-                    rList.Add((assemblyIdentity.Attributes["name"].Value, assemblyIdentity.Attributes["publicKeyToken"].Value.ToLower(), Version.Parse(value)));
-                    rList.Add((assemblyIdentity.Attributes["name"].Value, assemblyIdentity.Attributes["publicKeyToken"].Value.ToLower(), Version.Parse(value2)));
-                    var md = list.FirstOrDefault(e => e.Assembly.Name.String.Equals(assemblyIdentity.Attributes["name"].Value) && e.Assembly.PublicKeyToken.ToString() == assemblyIdentity.Attributes["publicKeyToken"].Value.ToLower());
-                    if (md == null)
+                    var oldVersion = Version.Parse(bindingRedirect.Attributes["oldVersion"].Value.Split('-')[1]);
+                    var newVersion = Version.Parse(bindingRedirect.Attributes["newVersion"].Value);
+                    var name = assemblyIdentity.Attributes["name"].Value;
+                    var token = assemblyIdentity.Attributes["publicKeyToken"].Value.ToLower();
+                    confusedList.Add((name, token, oldVersion));
+                    confusedList.Add((name, token, newVersion));
+                    if (!signedDll.Any(e => e.name == name && e.token == token))
                     {
-                        oldList.Add((assemblyIdentity.Attributes["name"].Value, assemblyIdentity.Attributes["publicKeyToken"].Value.ToLower(), Version.Parse(value2)));
+                        origConfigList.Add((name, token, newVersion));
                     }
                 }
+                node.RemoveChild(assemblyBinding1);
             }
-            node.RemoveAll();
+            // foreach (var tuple in signedDll)
+            // {
+            //     confusedList.Add(tuple);
+            // }
+            // node.RemoveAll();
             /**/
             var aList = document.CreateElement("assemblyBinding", "urn:schemas-microsoft-com:asm.v1");
             node.AppendChild(aList);
 
-            foreach (var grouping in rList.GroupBy(e => (e.name, e.token)))
+            foreach (var grouping in confusedList.GroupBy(e => (e.name, e.token)))
             {
                 var versions = grouping.Select(e => e.version).ToList();
-                var md = list.FirstOrDefault(e => e.Assembly.Name.String.Equals(grouping.Key.name) && e.Assembly.PublicKeyToken.ToString() == grouping.Key.token);
+                var md = dllList.FirstOrDefault(e => e.Assembly.Name.String.Equals(grouping.Key.name) && e.Assembly.PublicKeyToken.ToString() == grouping.Key.token);
                 Version k;
                 if (md == null)
                 {
                     // Console.WriteLine(grouping.Key.name + " " + grouping.Key.token);
-                    k = oldList.FirstOrDefault(e => e.name == grouping.Key.name && e.token == grouping.Key.token).version;
+                    k = origConfigList.FirstOrDefault(e => e.name == grouping.Key.name && e.token == grouping.Key.token).version;
                 }
                 else
                 {
@@ -122,6 +138,24 @@ namespace AssemblyAutoBind
             document.Save(new StreamWriter(memoryStream, Encoding.UTF8));
             var s1 = Encoding.UTF8.GetString(memoryStream.ToArray());
             File.WriteAllBytes(config, Encoding.UTF8.GetBytes(s1.Replace(" xmlns=\"\"", "")));
+        }
+
+        private static IEnumerable<ModuleDef> ResolveAllAssembly(IEnumerable<ModuleDef> dllList, IAssemblyResolver resolver)
+        {
+            List<ModuleDef> defs = new List<ModuleDef>();
+            var moduleDefs = dllList.ToList();
+            while (moduleDefs.Any())
+            {
+                var moduleDef = moduleDefs[0];
+                moduleDefs.RemoveAt(0);
+                if (defs.Any(e => e.Name == moduleDef.Name && e.Assembly.Version == moduleDef.Assembly.Version))
+                {
+                    continue;
+                }
+                defs.Add(moduleDef);
+                moduleDefs.AddRange(moduleDef.GetAssemblyRefs().Select(e => resolver.Resolve(e, moduleDef)?.ManifestModule).Where(e => e != null));
+            }
+            return defs;
         }
     }
 }
