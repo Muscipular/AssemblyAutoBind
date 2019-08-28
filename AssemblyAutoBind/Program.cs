@@ -34,12 +34,12 @@ namespace AssemblyAutoBind
             {
                 try
                 {
-                    Console.WriteLine(e);
+                    // Console.WriteLine(e);
                     return ModuleDefMD.Load(e, moduleContext);
                 }
                 catch (Exception exception)
                 {
-                    Console.WriteLine(e + " " + exception);
+                    // Console.WriteLine(e + " " + exception);
                     return null;
                 }
             }).Where(e => e != null).ToList();
